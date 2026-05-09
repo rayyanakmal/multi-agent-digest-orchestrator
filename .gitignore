@@ -1,0 +1,36 @@
+# Environment variables (never commit)
+.env
+.env.local
+*.pyc
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Local data (transient)
+data/
+credentials/
+.gcloud-config/
+*.db
+*.sqlite3
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.tar.gz
+
+# Docker
+docker-compose.override.yml

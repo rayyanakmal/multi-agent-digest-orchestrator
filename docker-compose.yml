@@ -1,0 +1,88 @@
+services:
+  digest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: daily-digest:dev
+    container_name: daily-digest-scheduler
+
+    environment:
+      # LLM Configuration
+      LLM_PROVIDER: deepseek
+      LLM_MODEL: deepseek-chat
+      # Loaded from .env file:
+      # DEEPSEEK_API_KEY
+
+      # News Configuration
+      # NEWSAPI_KEY loaded from .env
+      RSS_FEEDS: "https://news.ycombinator.com/rss,https://feeds.arstechnica.com/arstechnica/index"
+
+      # Digest Configuration
+      DIGEST_TOPIC: "Technology,Artificial Intelligence"
+      DIGEST_TIME: "07:00"
+      DIGEST_TZ: "Asia/Jakarta"
+      MAX_ARTICLES: "20"
+      MAX_RUN_SECONDS: "300"
+
+      # Budget
+      COST_LIMIT_USD: "0.05"
+      TOKEN_BUDGET: "10000"
+
+      # Google Drive
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-service-account.json
+      # GOOGLE_DRIVE_FOLDER_ID loaded from .env
+
+      # Runtime
+      RUN_MODE: scheduler
+      DATA_DIR: /app/data
+      LOG_LEVEL: INFO
+      TZ: "Asia/Jakarta"
+
+    env_file:
+      - .env
+
+    volumes:
+      # Data persistence for traces and fallback artifacts
+      - ./data:/app/data
+      # OAuth client and service-account files stay read-only.
+      - ./credentials/google-oauth-client.json:/app/credentials/google-oauth-client.json:ro
+      - ./credentials/google-service-account.json:/app/credentials/google-service-account.json:ro
+      # OAuth token must be writable for refresh.
+      - ./credentials/google-oauth-token.json:/app/credentials/google-oauth-token.json
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-off digest runner (use with: docker compose run --rm digest_once)
+  digest_once:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: daily-digest:dev
+
+    environment:
+      LLM_PROVIDER: deepseek
+      LLM_MODEL: deepseek-chat
+      DIGEST_TOPIC: "Technology,Artificial Intelligence"
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-service-account.json
+      RUN_MODE: once
+      DATA_DIR: /app/data
+      LOG_LEVEL: INFO
+      TZ: "Asia/Jakarta"
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./data:/app/data
+      - ./credentials/google-oauth-client.json:/app/credentials/google-oauth-client.json:ro
+      - ./credentials/google-service-account.json:/app/credentials/google-service-account.json:ro
+      - ./credentials/google-oauth-token.json:/app/credentials/google-oauth-token.json
+
+    profiles:
+      - manual
