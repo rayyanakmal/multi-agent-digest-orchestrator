@@ -1,6 +1,8 @@
 """Settings and environment configuration for the daily digest app"""
 
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -63,6 +65,11 @@ class Settings(BaseSettings):
     output_format: str = Field(default="pdf", env="OUTPUT_FORMAT")  # pdf | html | markdown
     data_dir: str = Field(default="./data", env="DATA_DIR")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    strict_pdf_only: bool = Field(default=True, env="STRICT_PDF_ONLY")
+    strict_pdf_allow_local_debug_fallback: bool = Field(
+        default=False,
+        env="STRICT_PDF_ALLOW_LOCAL_DEBUG_FALLBACK"
+    )
 
     # Development/Debug
     debug: bool = Field(default=False, env="DEBUG")
@@ -76,6 +83,18 @@ class Settings(BaseSettings):
     def get_rss_feeds_list(self) -> list[str]:
         """Parse RSS feeds from comma-separated string"""
         return [feed.strip() for feed in self.rss_feeds.split(",") if feed.strip()]
+
+    def get_digest_timezone(self) -> ZoneInfo:
+        """Return the configured business timezone for digest publication."""
+        return ZoneInfo(self.digest_tz)
+
+    def get_digest_now(self) -> datetime:
+        """Return the current time in the configured digest timezone."""
+        return datetime.now(self.get_digest_timezone())
+
+    def get_digest_date_str(self) -> str:
+        """Return the current business date for digest naming and validation."""
+        return self.get_digest_now().strftime("%Y-%m-%d")
 
     def validate_llm_provider(self) -> bool:
         """Validate that required API keys are set for the chosen provider"""

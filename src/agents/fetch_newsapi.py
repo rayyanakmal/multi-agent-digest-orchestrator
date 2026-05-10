@@ -1,10 +1,15 @@
 """News provider fetcher agent supporting NewsAPI.org and NewsData.io"""
 
+import logging
 import requests
 from typing import List
 from src.agents.base_agent import BaseAgent
+from src.adapters.resilience import CircuitBreaker, request_with_retry
 from src.models.contracts import AgentMessage, Article, RunContext
 from src.config import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class NewsAPIFetcher(BaseAgent):
@@ -19,6 +24,8 @@ class NewsAPIFetcher(BaseAgent):
         """Initialize News API fetcher"""
         super().__init__("newsapi_fetcher")
         self.settings = get_settings()
+        self._newsapi_breaker = CircuitBreaker(name="newsapi_everything")
+        self._newsdata_breaker = CircuitBreaker(name="newsdata_latest")
 
     def execute(self, context: RunContext, input_data: dict) -> AgentMessage:
         """Fetch articles from News API
@@ -83,7 +90,12 @@ class NewsAPIFetcher(BaseAgent):
             "apiKey": self.settings.newsapi_key
         }
         
-        response = requests.get(url, params=params, timeout=10)
+        response = request_with_retry(
+            fn=lambda: requests.get(url, params=params, timeout=10),
+            operation="newsapi.fetch_everything",
+            max_retries=self.settings.max_retries,
+            breaker=self._newsapi_breaker,
+        )
         response.raise_for_status()
         
         data = response.json()
@@ -115,13 +127,19 @@ class NewsAPIFetcher(BaseAgent):
             "language": "en",
         }
 
-        response = requests.get(url, params=params, timeout=10)
+        response = request_with_retry(
+            fn=lambda: requests.get(url, params=params, timeout=10),
+            operation="newsdata.fetch_latest",
+            max_retries=self.settings.max_retries,
+            breaker=self._newsdata_breaker,
+        )
         response.raise_for_status()
 
         data = response.json()
         status = data.get("status")
         if status and status != "success":
             message = data.get("results", {}).get("message") or data.get("message") or "Unknown NewsData error"
+            logger.warning("NewsData returned non-success status for topic '%s': %s", topic, message)
             raise RuntimeError(message)
 
         articles: List[Article] = []

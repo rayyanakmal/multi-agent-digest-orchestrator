@@ -53,6 +53,24 @@ RUN_MODE=once python -m src.runtime.entrypoint
 RUN_MODE=scheduler python -m src.runtime.entrypoint
 ```
 
+### Resilience Controls
+
+The pipeline now includes explicit runtime guardrails:
+
+- `MAX_RUN_SECONDS`: hard timeout for a single run in `RUN_MODE=once`
+- `MAX_RETRIES`: retry budget for transient HTTP failures (timeouts, 429, 5xx)
+- Circuit breakers per endpoint to prevent repeated failing calls from cascading
+- Summarizer budget guardrails (`COST_LIMIT_USD`, `TOKEN_BUDGET`) with explicit logs
+
+Recommended production defaults:
+
+```bash
+MAX_RETRIES=2
+MAX_RUN_SECONDS=300
+COST_LIMIT_USD=0.05
+TOKEN_BUDGET=10000
+```
+
 ### Running with Docker Compose
 
 Prerequisites:
@@ -242,7 +260,10 @@ PROJECT_ID=YOUR_PROJECT \
 REGION=asia-southeast1 \
 TIMEZONE="Asia/Hong_Kong" \
 MAX_EXECUTION_AGE_HOURS=30 \
+REQUIRE_EXPECTED_RUN=true \
 ./scripts/gcp_health_check.sh
+
+`gcp_health_check.sh` now also validates that the latest scheduler attempt and latest execution are recent enough to satisfy the most recent expected cron window for simple daily schedules such as `0 7 * * *`. This catches the case where yesterday's run is still fresh enough to pass a 30-hour freshness check even though today's 07:00 run was missed.
 
 # One-command release runner (preflight -> secrets -> deploy -> health)
 PROJECT_ID=YOUR_PROJECT \
@@ -413,6 +434,26 @@ Logs are written to:
 - stdout (container logs captured by platform)
 - `./data/traces/` (local artifacts)
 - `./data/digest_YYYY-MM-DD.md` (fallback markdown digests)
+
+## Testing and CI
+
+Run tests locally:
+
+```bash
+pytest -q
+```
+
+Run lint/format checks locally:
+
+```bash
+ruff check src tests
+black --check src tests
+```
+
+GitHub Actions workflow file:
+- `.github/workflows/test-and-validate.yml`
+
+The workflow runs lint, tests with coverage gate, and Docker build validation on pushes and pull requests.
 
 ## Provider Switching
 

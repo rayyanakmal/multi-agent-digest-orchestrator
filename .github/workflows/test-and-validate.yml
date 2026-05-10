@@ -1,0 +1,44 @@
+name: test-and-validate
+
+on:
+  push:
+    branches:
+      - main
+      - "robustness/**"
+      - "feature/**"
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov ruff black pre-commit
+
+      - name: Lint (ruff)
+        continue-on-error: true
+        run: ruff check src tests
+
+      - name: Format check (black)
+        continue-on-error: true
+        run: black --check src tests
+
+      - name: Run tests with coverage gate
+        run: |
+          pytest tests --maxfail=1 --disable-warnings --cov=src --cov-report=term-missing --cov-fail-under=40
+
+      - name: Build Docker image (validation only)
+        run: docker build -t daily-digest-ci:test .

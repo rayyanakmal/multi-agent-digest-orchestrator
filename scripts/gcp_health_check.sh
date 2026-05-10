@@ -11,6 +11,7 @@ set -euo pipefail
 #   SCHEDULER_NAME=daily-digest
 #   TIMEZONE=Asia/Hong_Kong
 #   MAX_EXECUTION_AGE_HOURS=30
+#   REQUIRE_EXPECTED_RUN=true
 #   REQUIRE_SUCCESS=true
 
 PROJECT_ID="${PROJECT_ID:-}"
@@ -19,6 +20,7 @@ JOB_NAME="${JOB_NAME:-daily-digest}"
 SCHEDULER_NAME="${SCHEDULER_NAME:-daily-digest}"
 TIMEZONE="${TIMEZONE:-Asia/Hong_Kong}"
 MAX_EXECUTION_AGE_HOURS="${MAX_EXECUTION_AGE_HOURS:-30}"
+REQUIRE_EXPECTED_RUN="${REQUIRE_EXPECTED_RUN:-true}"
 REQUIRE_SUCCESS="${REQUIRE_SUCCESS:-true}"
 
 if [[ -z "$PROJECT_ID" ]]; then
@@ -79,6 +81,7 @@ fi
 SCHEDULER_STATE="$($GCLOUD_BIN scheduler jobs describe "$SCHEDULER_NAME" --location "$REGION" --format='value(state)' 2>/dev/null || true)"
 SCHEDULER_CRON="$($GCLOUD_BIN scheduler jobs describe "$SCHEDULER_NAME" --location "$REGION" --format='value(schedule)' 2>/dev/null || true)"
 SCHEDULER_TZ="$($GCLOUD_BIN scheduler jobs describe "$SCHEDULER_NAME" --location "$REGION" --format='value(timeZone)' 2>/dev/null || true)"
+SCHEDULER_LAST_ATTEMPT="$($GCLOUD_BIN scheduler jobs describe "$SCHEDULER_NAME" --location "$REGION" --format='value(lastAttemptTime)' 2>/dev/null || true)"
 
 if [[ "$SCHEDULER_STATE" != "ENABLED" ]]; then
   echo "[ERROR] Scheduler is not enabled: ${SCHEDULER_STATE:-<empty>}"
@@ -87,6 +90,7 @@ fi
 
 echo "[OK] Scheduler enabled: $SCHEDULER_NAME"
 echo "[INFO] Scheduler config: cron='${SCHEDULER_CRON:-<unknown>}' timezone='${SCHEDULER_TZ:-<unknown>}'"
+echo "[INFO] Scheduler lastAttemptTime: ${SCHEDULER_LAST_ATTEMPT:-<empty>}"
 
 if [[ -n "$SCHEDULER_TZ" && "$SCHEDULER_TZ" != "$TIMEZONE" ]]; then
   echo "[WARN] Scheduler timezone differs from expected: expected=$TIMEZONE actual=$SCHEDULER_TZ"
@@ -109,18 +113,21 @@ for c in conds:
     break
 creation=data.get("metadata",{}).get("creationTimestamp","")
 completion=data.get("status",{}).get("completionTime","")
-print(cs); print(creation); print(completion); print(cm)')"
+log_uri=data.get("status",{}).get("logUri","")
+print(cs); print(creation); print(completion); print(cm); print(log_uri)')"
 
 LATEST_STATUS="$(printf '%s' "$EXEC_FIELDS" | sed -n '1p')"
 LATEST_CREATE_TIME="$(printf '%s' "$EXEC_FIELDS" | sed -n '2p')"
 LATEST_COMPLETE_TIME="$(printf '%s' "$EXEC_FIELDS" | sed -n '3p')"
 LATEST_MESSAGE="$(printf '%s' "$EXEC_FIELDS" | sed -n '4p')"
+LATEST_LOG_URI="$(printf '%s' "$EXEC_FIELDS" | sed -n '5p')"
 
 echo "[INFO] Latest execution: $LATEST_EXECUTION"
 echo "[INFO] Latest status: ${LATEST_STATUS:-<empty>}"
 echo "[INFO] Latest createTime: ${LATEST_CREATE_TIME:-<empty>}"
 echo "[INFO] Latest completionTime: ${LATEST_COMPLETE_TIME:-<empty>}"
 echo "[INFO] Latest message: ${LATEST_MESSAGE:-<empty>}"
+echo "[INFO] Latest logUri: ${LATEST_LOG_URI:-<empty>}"
 
 if [[ "$REQUIRE_SUCCESS" == "true" ]]; then
   if [[ "$LATEST_STATUS" != "True" ]]; then
@@ -169,6 +176,100 @@ PY
     exit 1
   else
     echo "[OK] Latest execution freshness: ${AGE_HOURS}h old"
+  fi
+fi
+
+if [[ "$REQUIRE_EXPECTED_RUN" == "true" ]]; then
+  export LATEST_CREATE_TIME SCHEDULER_LAST_ATTEMPT SCHEDULER_CRON TIMEZONE
+  EXPECTED_RUN_RESULT="$(python3 - <<'PY'
+import datetime
+import os
+import sys
+from zoneinfo import ZoneInfo
+
+
+def parse_iso8601(value: str) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+cron = os.environ.get("SCHEDULER_CRON", "").strip()
+tz_name = os.environ.get("TIMEZONE", "").strip()
+latest_create = parse_iso8601(os.environ.get("LATEST_CREATE_TIME", "").strip())
+scheduler_last_attempt = parse_iso8601(os.environ.get("SCHEDULER_LAST_ATTEMPT", "").strip())
+
+parts = cron.split()
+if len(parts) != 5:
+    print("unsupported")
+    sys.exit(0)
+
+minute, hour, day_of_month, month, day_of_week = parts
+if not (minute.isdigit() and hour.isdigit() and day_of_month == "*" and month == "*" and day_of_week == "*"):
+    print("unsupported")
+    sys.exit(0)
+
+try:
+    tz = ZoneInfo(tz_name)
+except Exception:
+    print("invalid-timezone")
+    sys.exit(0)
+
+now_local = datetime.datetime.now(tz)
+expected_local = now_local.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
+if now_local < expected_local:
+    expected_local -= datetime.timedelta(days=1)
+
+expected_utc = expected_local.astimezone(datetime.timezone.utc)
+print(expected_local.isoformat())
+print(expected_utc.isoformat())
+
+if scheduler_last_attempt is None:
+    print("missing-last-attempt")
+else:
+    print("scheduler-ok" if scheduler_last_attempt.astimezone(datetime.timezone.utc) >= expected_utc else "scheduler-stale")
+
+if latest_create is None:
+    print("missing-execution")
+else:
+    print("execution-ok" if latest_create.astimezone(datetime.timezone.utc) >= expected_utc else "execution-stale")
+PY
+)"
+
+  EXPECTED_LOCAL_TIME="$(printf '%s' "$EXPECTED_RUN_RESULT" | sed -n '1p')"
+  EXPECTED_UTC_TIME="$(printf '%s' "$EXPECTED_RUN_RESULT" | sed -n '2p')"
+  EXPECTED_SCHEDULER_STATE="$(printf '%s' "$EXPECTED_RUN_RESULT" | sed -n '3p')"
+  EXPECTED_EXECUTION_STATE="$(printf '%s' "$EXPECTED_RUN_RESULT" | sed -n '4p')"
+
+  if [[ "$EXPECTED_LOCAL_TIME" == "unsupported" ]]; then
+    echo "[WARN] Expected-run validation skipped: unsupported cron expression '${SCHEDULER_CRON:-<empty>}'"
+  elif [[ "$EXPECTED_LOCAL_TIME" == "invalid-timezone" ]]; then
+    echo "[WARN] Expected-run validation skipped: invalid timezone '$TIMEZONE'"
+  else
+    echo "[INFO] Expected latest scheduled run: local=${EXPECTED_LOCAL_TIME:-<empty>} utc=${EXPECTED_UTC_TIME:-<empty>}"
+
+    if [[ "$EXPECTED_SCHEDULER_STATE" == "missing-last-attempt" ]]; then
+      echo "[ERROR] Scheduler has no lastAttemptTime; cannot confirm the expected run was triggered"
+      exit 1
+    elif [[ "$EXPECTED_SCHEDULER_STATE" == "scheduler-stale" ]]; then
+      echo "[ERROR] Scheduler lastAttemptTime predates the expected scheduled run"
+      exit 1
+    else
+      echo "[OK] Scheduler attempted the latest expected run window"
+    fi
+
+    if [[ "$EXPECTED_EXECUTION_STATE" == "missing-execution" ]]; then
+      echo "[ERROR] Latest execution createTime unavailable; cannot confirm the expected run executed"
+      exit 1
+    elif [[ "$EXPECTED_EXECUTION_STATE" == "execution-stale" ]]; then
+      echo "[ERROR] Latest execution predates the latest expected scheduled run"
+      exit 1
+    else
+      echo "[OK] Latest execution matches the latest expected run window"
+    fi
   fi
 fi
 

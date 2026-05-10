@@ -3,22 +3,50 @@
 import logging
 import sys
 import os
+import signal
 from src.config import get_settings
 from src.orchestrator import DailyDigestOrchestrator
 from src.scheduler import DigestScheduler
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
+
+
+class PipelineTimeoutError(RuntimeError):
+    """Raised when a run exceeds the configured timeout budget."""
+
+
+def _configure_logging(log_level: str):
+    """Configure root logger from runtime settings."""
+    numeric_level = getattr(logging, str(log_level).upper(), logging.INFO)
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+
+def _run_with_timeout(orchestrator: DailyDigestOrchestrator, timeout_seconds: int):
+    """Run orchestrator with a POSIX alarm timeout guard."""
+
+    if timeout_seconds <= 0:
+        return orchestrator.run_digest_pipeline()
+
+    def _timeout_handler(signum, frame):
+        raise PipelineTimeoutError(f"digest_pipeline_exceeded_timeout:{timeout_seconds}s")
+
+    previous_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(timeout_seconds)
+    try:
+        return orchestrator.run_digest_pipeline()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def main():
     """Main entrypoint supporting run modes: once | scheduler"""
     settings = get_settings()
+    _configure_logging(settings.log_level)
     
     logger.info(f"Starting Daily Digest App (mode: {settings.run_mode})")
     logger.info(f"LLM Provider: {settings.llm_provider}")
@@ -30,12 +58,15 @@ def main():
         orchestrator = DailyDigestOrchestrator()
         
         try:
-            context = orchestrator.run_digest_pipeline()
+            context = _run_with_timeout(orchestrator, settings.max_run_seconds)
             logger.info(f"Run completed with status: {context.status}")
             logger.info(f"Metadata: fetch={context.fetch_count}, dedupe={context.deduplicated_count}, summarized={context.summarized_count}, cost=${context.budget_spent_usd:.4f}")
             
             # Exit with code 0 on success, 1 on failure
             sys.exit(0 if context.status in ["success", "partial"] else 1)
+        except PipelineTimeoutError as timeout_error:
+            logger.error("Run timed out after %ss: %s", settings.max_run_seconds, timeout_error)
+            sys.exit(1)
         except Exception as e:
             logger.error(f"Run failed: {str(e)}")
             sys.exit(1)
