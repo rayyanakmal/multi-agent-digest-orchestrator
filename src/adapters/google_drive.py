@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import logging
 from typing import Optional
 
 from googleapiclient.discovery import build
@@ -12,10 +13,12 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google.auth.transport.requests import Request
+from src.config import get_settings
 from src.models.contracts import DigestOutput
 from src.agents.publish_digest import DigestFormatterAgent
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+logger = logging.getLogger(__name__)
 
 # Paths (relative to project root, resolved at runtime)
 _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -73,6 +76,7 @@ class GoogleDriveAdapter:
         folder_id: str,
         credentials_json: Optional[str] = None,
     ):
+        self.settings = get_settings()
         self.credentials_path = credentials_path
         self.credentials_json = credentials_json
         self.folder_id = folder_id
@@ -126,11 +130,7 @@ class GoogleDriveAdapter:
     def _upload_or_update_file(self, digest: DigestOutput) -> Optional[str]:
         """Create or overwrite the daily digest file in the Drive folder."""
         filename, text, mime_type = self._digest_output_artifact(digest)
-        media = MediaIoBaseUpload(
-            io.BytesIO(text),
-            mimetype=mime_type,
-            resumable=False,
-        )
+        media = self._build_media_upload(text, mime_type)
 
         # Check if file already exists so we can update in-place.
         safe_name = filename.replace("'", "\\'")
@@ -156,12 +156,68 @@ class GoogleDriveAdapter:
         metadata: dict = {"name": filename}
         if self.folder_id:
             metadata["parents"] = [self.folder_id]
-        created = self.drive_service.files().create(
-            body=metadata,
-            media_body=media,
-            fields="id",
+        try:
+            created = self.drive_service.files().create(
+                body=metadata,
+                media_body=media,
+                fields="id",
+            ).execute()
+            return created.get("id")
+        except HttpError as exc:
+            if not self._is_storage_quota_exceeded(exc):
+                raise
+
+            logger.warning(
+                "Drive create failed due to storage quota; attempting fallback update of latest digest file."
+            )
+            fallback_file_id = self._find_latest_digest_file_id()
+            if not fallback_file_id:
+                raise
+
+            self.drive_service.files().update(
+                fileId=fallback_file_id,
+                body={"name": filename},
+                media_body=self._build_media_upload(text, mime_type),
+            ).execute()
+            return fallback_file_id
+
+    def _build_media_upload(self, content: bytes, mime_type: str) -> MediaIoBaseUpload:
+        """Build a fresh media upload body."""
+        return MediaIoBaseUpload(
+            io.BytesIO(content),
+            mimetype=mime_type,
+            resumable=False,
+        )
+
+    def _find_latest_digest_file_id(self) -> Optional[str]:
+        """Return most recently modified digest file ID in the target folder."""
+        query_parts = ["name contains 'Daily AI and Technology Digest -'", "trashed=false"]
+        if self.folder_id:
+            query_parts.append(f"'{self.folder_id}' in parents")
+
+        result = self.drive_service.files().list(
+            q=" and ".join(query_parts),
+            fields="files(id,modifiedTime)",
+            orderBy="modifiedTime desc",
+            pageSize=1,
         ).execute()
-        return created.get("id")
+        files = result.get("files", [])
+        if not files:
+            return None
+        return files[0].get("id")
+
+    def _is_storage_quota_exceeded(self, err: HttpError) -> bool:
+        """Check whether a Drive API error indicates storage quota exhaustion."""
+        if getattr(err, "resp", None) is None:
+            return False
+        if getattr(err.resp, "status", None) != 403:
+            return False
+        content = getattr(err, "content", b"")
+        if isinstance(content, bytes):
+            content_text = content.decode("utf-8", errors="ignore")
+        else:
+            content_text = str(content)
+        return "storageQuotaExceeded" in content_text
 
     def _digest_output_artifact(self, digest: DigestOutput) -> tuple[str, bytes, str]:
         """Build output artifact in priority order: PDF, then HTML, then markdown."""
@@ -177,7 +233,8 @@ class GoogleDriveAdapter:
                 pdf_bytes,
                 "application/pdf",
             )
-        except Exception:
+        except Exception as weasy_exc:
+            logger.exception("WeasyPrint PDF render failed")
             # Try a browser-based PDF renderer as secondary option.
             try:
                 from playwright.sync_api import sync_playwright
@@ -188,7 +245,9 @@ class GoogleDriveAdapter:
 
                 try:
                     with sync_playwright() as p:
-                        browser = p.chromium.launch()
+                        browser = p.chromium.launch(
+                            args=["--no-sandbox", "--disable-dev-shm-usage"]
+                        )
                         page = browser.new_page()
                         page.goto(f"file://{html_path}")
                         pdf_bytes = page.pdf(format="A4", print_background=True, margin={"top": "14mm", "bottom": "14mm", "left": "14mm", "right": "14mm"})
@@ -204,8 +263,22 @@ class GoogleDriveAdapter:
                         os.remove(html_path)
                     except OSError:
                         pass
-            except Exception:
-                pass
+            except Exception as playwright_exc:
+                logger.exception("Playwright PDF render failed")
+                if self.settings.strict_pdf_only:
+                    raise RuntimeError(
+                        f"strict_pdf_render_failed: weasyprint={weasy_exc!r}; playwright={playwright_exc!r}"
+                    ) from playwright_exc
+
+                logger.warning(
+                    "PDF rendering failed with both engines; falling back to non-PDF output",
+                    exc_info=playwright_exc,
+                )
+
+            if self.settings.strict_pdf_only:
+                raise RuntimeError(
+                    f"strict_pdf_render_failed: weasyprint={weasy_exc!r}"
+                ) from weasy_exc
 
             # Graceful fallback to HTML if PDF conversion is unavailable.
             try:

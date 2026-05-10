@@ -2,7 +2,6 @@
 
 import logging
 import os
-from datetime import datetime
 from typing import Optional
 from src.agents.base_agent import BaseAgent
 from src.models.contracts import AgentMessage, DigestOutput, RunContext
@@ -67,6 +66,21 @@ class DriveUploadAgent(BaseAgent):
                         payload={"document_id": doc_id, "document_url": doc_url},
                         metadata={"uploaded": True}
                     )
+                if self.settings.strict_pdf_only:
+                    debug_payload = self._attempt_local_debug_fallback(digest)
+                    if debug_payload:
+                        return msg.with_error(
+                            f"Strict PDF publish failed: {doc_id}",
+                            metadata={
+                                "strict_pdf_only": True,
+                                "saved_locally": True,
+                                "debug_local_files": debug_payload,
+                            },
+                        )
+                    return msg.with_error(
+                        f"Strict PDF publish failed: {doc_id}",
+                        metadata={"strict_pdf_only": True},
+                    )
                 return self._fallback_local_save(msg, digest, error=doc_id)
             
             # Fallback: save locally
@@ -95,10 +109,10 @@ class DriveUploadAgent(BaseAgent):
                 # Save as markdown + styled HTML for local readability
                 md_content = DigestFormatterAgent.digest_to_markdown(digest)
                 html_content = DigestFormatterAgent.digest_to_html(digest)
-                today = datetime.utcnow().strftime("%Y-%m-%d")
-                md_file = os.path.join(self.settings.data_dir, f"digest_{today}.md")
-                html_file = os.path.join(self.settings.data_dir, f"digest_{today}.html")
-                pdf_file = os.path.join(self.settings.data_dir, f"digest_{today}.pdf")
+                digest_date = digest.date or self.settings.get_digest_date_str()
+                md_file = os.path.join(self.settings.data_dir, f"digest_{digest_date}.md")
+                html_file = os.path.join(self.settings.data_dir, f"digest_{digest_date}.html")
+                pdf_file = os.path.join(self.settings.data_dir, f"digest_{digest_date}.pdf")
                 
                 with open(md_file, "w") as f:
                     f.write(md_content)
@@ -131,3 +145,43 @@ class DriveUploadAgent(BaseAgent):
             pass
         
         return msg.with_error(f"Upload failed and fallback save failed: {error}")
+
+    def _attempt_local_debug_fallback(self, digest: DigestOutput) -> Optional[dict]:
+        """Optionally write local debug artifacts in strict mode without marking success."""
+        if not self.settings.strict_pdf_allow_local_debug_fallback:
+            return None
+
+        try:
+            from src.agents.publish_digest import DigestFormatterAgent
+
+            os.makedirs(self.settings.data_dir, exist_ok=True)
+            digest_date = digest.date or self.settings.get_digest_date_str()
+            md_content = DigestFormatterAgent.digest_to_markdown(digest)
+            html_content = DigestFormatterAgent.digest_to_html(digest)
+
+            md_file = os.path.join(self.settings.data_dir, f"digest_{digest_date}.md")
+            html_file = os.path.join(self.settings.data_dir, f"digest_{digest_date}.html")
+            pdf_file = os.path.join(self.settings.data_dir, f"digest_{digest_date}.pdf")
+
+            with open(md_file, "w") as f:
+                f.write(md_content)
+            with open(html_file, "w") as f:
+                f.write(html_content)
+
+            pdf_generated = False
+            try:
+                from weasyprint import HTML
+
+                HTML(string=html_content).write_pdf(pdf_file)
+                pdf_generated = True
+            except Exception:
+                pass
+
+            return {
+                "local_file": md_file,
+                "local_html": html_file,
+                "local_pdf": pdf_file if pdf_generated else None,
+                "pdf_generated": pdf_generated,
+            }
+        except Exception:
+            return None

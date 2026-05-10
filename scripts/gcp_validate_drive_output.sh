@@ -13,13 +13,19 @@ set -euo pipefail
 #
 # Optional env vars:
 #   DIGEST_DATE=2026-05-09
+#   TIMEZONE=Asia/Hong_Kong
+#   EXECUTION_NAME=daily-digest-abc12
+#   STRICT_PDF_ONLY=true
 #   GOOGLE_DRIVE_FOLDER_ID=...
 #   GOOGLE_SERVICE_ACCOUNT_SECRET=google-service-account-json
 #   JOB_NAME=daily-digest
 
 PROJECT_ID="${PROJECT_ID:-}"
 REGION="${REGION:-asia-southeast1}"
-DIGEST_DATE="${DIGEST_DATE:-$(date -u +%F)}"
+TIMEZONE="${TIMEZONE:-Asia/Hong_Kong}"
+DIGEST_DATE="${DIGEST_DATE:-}"
+EXECUTION_NAME="${EXECUTION_NAME:-}"
+STRICT_PDF_ONLY="${STRICT_PDF_ONLY:-true}"
 GOOGLE_DRIVE_FOLDER_ID="${GOOGLE_DRIVE_FOLDER_ID:-}"
 GOOGLE_SERVICE_ACCOUNT_SECRET="${GOOGLE_SERVICE_ACCOUNT_SECRET:-google-service-account-json}"
 JOB_NAME="${JOB_NAME:-daily-digest}"
@@ -27,6 +33,18 @@ JOB_NAME="${JOB_NAME:-daily-digest}"
 if [[ -z "$PROJECT_ID" ]]; then
   echo "[ERROR] PROJECT_ID is required"
   exit 1
+fi
+
+if [[ -z "$DIGEST_DATE" ]]; then
+  export TIMEZONE
+  DIGEST_DATE="$(python3 - <<'PY'
+from datetime import datetime
+import os
+from zoneinfo import ZoneInfo
+
+print(datetime.now(ZoneInfo(os.environ["TIMEZONE"])).strftime("%Y-%m-%d"))
+PY
+)"
 fi
 
 if command -v gcloud >/dev/null 2>&1; then
@@ -131,6 +149,13 @@ if [[ "$STATUS" == "found" ]]; then
   FILE_SIZE="$(printf '%s' "$VALIDATION_OUTPUT" | sed -n '5p')"
   FILE_URL="$(printf '%s' "$VALIDATION_OUTPUT" | sed -n '6p')"
 
+  if [[ "$STRICT_PDF_ONLY" == "true" ]]; then
+    if [[ ! "$FILE_NAME" =~ \.pdf$ ]]; then
+      echo "[ERROR] Strict PDF mode: expected .pdf artifact but found '$FILE_NAME'"
+      exit 1
+    fi
+  fi
+
   echo "[OK] Drive digest file found for date $DIGEST_DATE"
   echo "[INFO] name: ${FILE_NAME:-<empty>}"
   echo "[INFO] id: ${FILE_ID:-<empty>}"
@@ -147,15 +172,50 @@ if [[ "$STATUS" == error:* ]]; then
     echo "[WARN] ${ERROR_KIND}"
     echo "[INFO] Falling back to Cloud Run log-based validation"
 
-    LATEST_UPLOAD_LINE="$(
-      "$GCLOUD_BIN" run jobs logs read "$JOB_NAME" \
-        --region "$REGION" \
-        --project "$PROJECT_ID" \
-        --limit=250 2>/dev/null | \
-      grep 'Successfully uploaded to Drive:' | \
-      grep "$DIGEST_DATE" | \
-      tail -n 1 || true
-    )"
+    if [[ -z "$EXECUTION_NAME" ]]; then
+      EXECUTION_NAME="$(
+        "$GCLOUD_BIN" run jobs executions list \
+          --region "$REGION" \
+          --job "$JOB_NAME" \
+          --limit 1 \
+          --sort-by='~createTime' \
+          --format='value(name)' 2>/dev/null || true
+      )"
+    fi
+
+    LATEST_UPLOAD_LINE=""
+    if [[ -n "$EXECUTION_NAME" ]]; then
+      echo "[INFO] Validating logs for execution: $EXECUTION_NAME"
+      LATEST_UPLOAD_LINE="$(
+        "$GCLOUD_BIN" logging read \
+          "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"$JOB_NAME\" AND labels.\"run.googleapis.com/execution_name\"=\"$EXECUTION_NAME\"" \
+          --project "$PROJECT_ID" \
+          --limit 200 \
+          --format='value(timestamp,textPayload)' 2>/dev/null | \
+        grep -E "Successfully uploaded to Drive( for business date)?" | \
+        grep -E "\.pdf|file/d/" | \
+        grep "$DIGEST_DATE" | \
+        tail -n 1 || true
+      )"
+    fi
+
+    if [[ -z "$LATEST_UPLOAD_LINE" ]]; then
+      if [[ -n "$EXECUTION_NAME" ]]; then
+        echo "[ERROR] No successful Drive upload log found for execution $EXECUTION_NAME"
+        exit 1
+      fi
+      echo "[WARN] Execution-scoped upload log not found; trying broad job log search"
+      LATEST_UPLOAD_LINE="$(
+        "$GCLOUD_BIN" run jobs logs read "$JOB_NAME" \
+          --region "$REGION" \
+          --project "$PROJECT_ID" \
+          --limit=300 2>/dev/null | \
+        grep -E "Successfully uploaded to Drive( for business date)?" | \
+        grep -E "\.pdf|file/d/" | \
+        grep "$DIGEST_DATE" | \
+        tail -n 1 || true
+      )"
+    fi
 
     if [[ -n "$LATEST_UPLOAD_LINE" ]]; then
       echo "[OK] Found same-day successful Drive upload log"

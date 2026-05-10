@@ -4,6 +4,7 @@ from datetime import datetime
 from html import escape
 from typing import Optional
 from src.agents.base_agent import BaseAgent
+from src.config import get_settings
 from src.models.contracts import AgentMessage, DigestOutput, SummaryItem, RunContext
 
 
@@ -13,6 +14,7 @@ class DigestFormatterAgent(BaseAgent):
     def __init__(self):
         """Initialize digest formatter agent"""
         super().__init__("digest_formatter")
+        self.settings = get_settings()
 
     def execute(self, context: RunContext, input_data: dict) -> AgentMessage:
         """Format digest for publication
@@ -58,7 +60,8 @@ class DigestFormatterAgent(BaseAgent):
             takeaways.extend([s.summary for s in summaries[: (3 - len(takeaways))]])
         
         # Create title
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        digest_now = self.settings.get_digest_now()
+        today = digest_now.strftime("%Y-%m-%d")
         title = f"Daily AI and Technology Digest - {today}"
         
         # Create watchlist
@@ -67,7 +70,7 @@ class DigestFormatterAgent(BaseAgent):
             " fast-moving open-source tooling changes that can alter build vs buy decisions."
         )
 
-        layout_pages = self._build_layout_pages(summaries, today, context)
+        layout_pages = self._build_layout_pages(summaries, today, context, digest_now.strftime("%A"))
         executive_snapshot = [
             "Developer velocity remains tied to tooling maturity, not just model quality.",
             "Infrastructure announcements are outpacing most teams' integration readiness.",
@@ -97,7 +100,7 @@ class DigestFormatterAgent(BaseAgent):
         
         return digest
 
-    def _build_layout_pages(self, summaries: list[SummaryItem], date: str, context: RunContext) -> list[dict]:
+    def _build_layout_pages(self, summaries: list[SummaryItem], date: str, context: RunContext, weekday: str) -> list[dict]:
         """Build the Technical Architect 5-page layout from flat summaries."""
         rotation_map = {
             "Monday": "Healthcare",
@@ -108,7 +111,6 @@ class DigestFormatterAgent(BaseAgent):
             "Saturday": "Education",
             "Sunday": "Open Source",
         }
-        weekday = datetime.utcnow().strftime("%A")
         vertical = rotation_map.get(weekday, "Open Source")
 
         github_items = [s for s in summaries if "github" in s.url.lower() or "github" in s.source.lower()][:5]
@@ -250,8 +252,9 @@ class DigestFormatterAgent(BaseAgent):
                 page_no = page.get("page")
                 page_title = page.get("title", "Untitled")
                 sections = page.get("sections", {})
+                page_emoji = DigestFormatterAgent._page_emoji(page_no)
 
-                md_lines.extend([f"---", f"## Page {page_no}: {page_title}", ""])
+                md_lines.extend([f"---", f"## Page {page_no}: {page_emoji} {page_title}", ""])
 
                 if page_no == 1:
                     md_lines.append("### Executive Snapshot")
@@ -319,7 +322,8 @@ class DigestFormatterAgent(BaseAgent):
             md_lines.append(f"- {takeaway}")
         md_lines.extend(["", "## Article Briefs", ""])
         for summary in digest.article_summaries:
-            md_lines.append(f"### {summary.title}")
+            item_emoji = DigestFormatterAgent._contextual_emoji(summary.model_dump())
+            md_lines.append(f"### {item_emoji} {summary.title}")
             md_lines.append(f"**Source:** {summary.source}")
             md_lines.append(f"**Summary:** {summary.summary}")
             if summary.key_points:
@@ -457,45 +461,45 @@ class DigestFormatterAgent(BaseAgent):
       --page-bg: #fafaf8;
     }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: #f5f4f0; color: var(--ink); font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; font-size: 14px; line-height: 1.6; }}
+    body {{ margin: 0; background: #f5f4f0; color: var(--ink); font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"; font-size: 14px; line-height: 1.5; }}
     .container {{ max-width: 900px; margin: 0 auto; padding: 24px 20px 48px; }}
-    .hero {{ padding: 16px 0 12px; border-bottom: 2px solid var(--accent); margin-bottom: 16px; }}
+    .hero {{ padding: 14px 0 10px; border-bottom: 2px solid var(--accent); margin-bottom: 12px; }}
     .hero h1 {{ margin: 0; font-size: 26px; color: var(--ink); line-height: 1.2; }}
     .hero .sub {{ font-size: 12px; color: var(--muted); margin-top: 4px; }}
     .strip {{ margin-top: 6px; font-size: 11px; color: var(--muted); }}
-    .takeaways {{ background: #eef4f1; border-left: 4px solid var(--accent); padding: 10px 14px; margin-bottom: 16px; }}
-    .takeaways h3 {{ margin: 0 0 5px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }}
+    .takeaways {{ background: #eef4f1; border-left: 4px solid var(--accent); padding: 8px 12px; margin-bottom: 12px; }}
+    .takeaways h3 {{ margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }}
     .takeaways ul {{ margin: 0; padding-left: 16px; }}
-    .takeaways li {{ margin: 3px 0; font-size: 13px; }}
-    .page-block {{ background: var(--page-bg); padding: 16px 18px; margin-top: 0; break-before: page; page-break-before: always; }}
+    .takeaways li {{ margin: 2px 0; font-size: 13px; }}
+    .page-block {{ background: var(--page-bg); padding: 14px 16px; margin-top: 0; break-before: page; page-break-before: always; }}
     .page-block:first-of-type {{ break-before: auto; page-break-before: auto; }}
-    .page-head {{ border-bottom: 2px solid var(--accent); margin-bottom: 12px; padding-bottom: 6px; }}
+    .page-head {{ border-bottom: 2px solid var(--accent); margin-bottom: 10px; padding-bottom: 5px; }}
     .kicker {{ color: var(--muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }}
     .page-head h2 {{ margin: 2px 0 0; font-size: 20px; }}
-    h3 {{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); margin: 12px 0 5px; break-after: avoid-page; page-break-after: avoid; }}
-    .snapshot {{ background: #eef4f1; border-left: 3px solid var(--accent); padding: 8px 12px; margin-bottom: 10px; }}
-    .snapshot h3 {{ margin: 0 0 4px; }}
+    h3 {{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); margin: 10px 0 4px; break-after: avoid-page; page-break-after: avoid; }}
+    .snapshot {{ background: #eef4f1; border-left: 3px solid var(--accent); padding: 7px 10px; margin-bottom: 8px; }}
+    .snapshot h3 {{ margin: 0 0 3px; }}
     .snapshot ul {{ margin: 0; padding-left: 16px; }}
     .snapshot li {{ margin: 2px 0; font-size: 13px; }}
-    .rotation {{ border-left: 3px solid #c07820; padding: 6px 10px; margin-bottom: 10px; font-size: 13px; color: #5f3c08; background: var(--warn-bg); }}
+    .rotation {{ border-left: 3px solid #c07820; padding: 5px 9px; margin-bottom: 8px; font-size: 13px; color: #5f3c08; background: var(--warn-bg); }}
     .entry {{ break-inside: avoid; page-break-inside: avoid; padding: 2px 0; }}
     .entry h4 {{ margin: 0 0 1px; font-size: 15px; line-height: 1.3; }}
     .meta {{ font-size: 11px; color: var(--muted); margin: 0 0 4px; }}
-    .entry p {{ margin: 3px 0 4px; font-size: 13px; }}
+    .entry p {{ margin: 2px 0 3px; font-size: 13px; }}
     .strategic {{ background: var(--warn-bg); border-left: 3px solid var(--warn-border); padding: 5px 10px; margin: 4px 0; font-size: 12px; break-inside: avoid; page-break-inside: avoid; }}
     .strategic strong {{ color: #6b3a00; }}
-    .entry ul {{ margin: 3px 0 4px; padding-left: 18px; }}
+    .entry ul {{ margin: 2px 0 3px; padding-left: 18px; }}
     .entry ul li {{ font-size: 12px; margin: 1px 0; }}
     .entry a {{ font-size: 12px; color: var(--accent); text-decoration: none; }}
     .entry-rule {{ border: none; border-top: 1px solid var(--border); margin: 6px 0; }}
-    .meta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 6px 0; }}
+    .meta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin: 5px 0; }}
     .meta-row {{ font-size: 12px; }}
     .meta-key {{ color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; display: block; }}
     .meta-value {{ font-weight: 600; display: block; }}
     .link-list ul {{ margin: 4px 0 0; padding-left: 16px; }}
     .link-list li {{ margin: 2px 0; font-size: 12px; }}
     .src {{ color: var(--muted); font-size: 11px; }}
-    .source-lane {{ margin-top: 8px; font-size: 11px; color: var(--muted); border-top: 1px dashed var(--border); padding-top: 6px; }}
+    .source-lane {{ margin-top: 6px; font-size: 11px; color: var(--muted); border-top: 1px dashed var(--border); padding-top: 5px; }}
     .code-block {{ background: #eef3f5; border-left: 3px solid var(--accent); padding: 8px 12px; font-size: 12px; margin: 6px 0; }}
         @media screen and (max-width: 720px) {{
       .container {{ padding: 16px 12px 40px; }}
@@ -542,8 +546,9 @@ class DigestFormatterAgent(BaseAgent):
             "This matters because it affects implementation choices for engineers shipping AI products in Hong Kong.",
         )
         url = item.get("url", "")
+        emoji = DigestFormatterAgent._contextual_emoji(item)
 
-        lines.append(f"#### {title}")
+        lines.append(f"#### {emoji} {title}")
         lines.append(f"**Source:** {source}")
         lines.append(f"**Summary:** {summary}")
         lines.append(f"**Strategic Why (HK):** {strategic_why}")

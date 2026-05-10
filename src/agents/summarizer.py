@@ -1,10 +1,14 @@
 """Summarization agent using LangChain and provider-agnostic LLM"""
 
 from typing import List
+import logging
 from src.agents.base_agent import BaseAgent
 from src.models.contracts import AgentMessage, Article, SummaryItem, RunContext
 from src.adapters.provider_registry import get_summarizer_service
 from src.config import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class SummarizationAgent(BaseAgent):
@@ -40,9 +44,29 @@ class SummarizationAgent(BaseAgent):
             
             summaries = []
             total_cost = 0.0
+            failed_articles = 0
             
             for article in articles[:self.settings.max_articles]:
                 try:
+                    projected_cost = context.budget_spent_usd + total_cost
+                    if projected_cost >= self.settings.cost_limit_usd:
+                        logger.warning(
+                            "Stopping summarization due to cost limit. run_id=%s current=%.5f limit=%.5f",
+                            context.run_id,
+                            projected_cost,
+                            self.settings.cost_limit_usd,
+                        )
+                        break
+
+                    if context.tokens_used >= self.settings.token_budget:
+                        logger.warning(
+                            "Stopping summarization due to token budget. run_id=%s current=%s limit=%s",
+                            context.run_id,
+                            context.tokens_used,
+                            self.settings.token_budget,
+                        )
+                        break
+
                     # Call provider-blind summarization service
                     response = self.summarizer_service.summarize_article(
                         title=article.title,
@@ -75,14 +99,29 @@ class SummarizationAgent(BaseAgent):
                     
                     # Check cost budget
                     if context.budget_spent_usd + total_cost > self.settings.cost_limit_usd:
+                        logger.warning(
+                            "Reached cost threshold after article summary. run_id=%s cost=%.5f limit=%.5f",
+                            context.run_id,
+                            context.budget_spent_usd + total_cost,
+                            self.settings.cost_limit_usd,
+                        )
                         break
                         
                 except Exception as article_error:
                     # Continue with other articles even if one fails
-                    pass
+                    failed_articles += 1
+                    logger.warning(
+                        "Article summarization failed for run_id=%s source=%s url=%s error=%s",
+                        context.run_id,
+                        article.source,
+                        article.url,
+                        article_error,
+                    )
             
             context.summarized_count = len(summaries)
             context.budget_spent_usd += total_cost
+            if failed_articles:
+                context.errors.append(f"summarizer_failed_articles:{failed_articles}")
             
             return msg.with_success(
                 payload={
@@ -91,6 +130,7 @@ class SummarizationAgent(BaseAgent):
                 },
                 metadata={
                     "summaries_count": len(summaries),
+                    "failed_articles": failed_articles,
                     "cost_usd": total_cost,
                     "tokens_used": context.tokens_used
                 }

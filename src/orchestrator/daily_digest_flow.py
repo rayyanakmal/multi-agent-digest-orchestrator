@@ -42,8 +42,10 @@ class DailyDigestOrchestrator:
         # Initialize run context
         run_id = f"digest-{datetime.utcnow().strftime('%Y-%m-%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         context = RunContext(run_id=run_id)
+        business_date = self.settings.get_digest_date_str()
         
         logger.info(f"Starting digest run: {run_id}")
+        logger.info(f"Business digest date: {business_date} ({self.settings.digest_tz})")
         
         try:
             # Phase 1: Fetch articles from multiple sources
@@ -104,6 +106,7 @@ class DailyDigestOrchestrator:
                 return context
             
             digest = format_result.payload
+            logger.info(f"Prepared digest payload date: {digest.get('date', '<missing>')}")
             
             # Phase 5: Upload to Drive (with local fallback)
             logger.info("Phase 5: Uploading to Google Drive")
@@ -111,15 +114,32 @@ class DailyDigestOrchestrator:
             
             if upload_result.status == "success":
                 if upload_result.payload.get("fallback"):
+                    if self.settings.strict_pdf_only:
+                        logger.error(
+                            "Strict PDF mode violation: fallback payload returned as success for business date %s",
+                            business_date,
+                        )
+                        context.status = RunStatus.FAILED
+                        context.errors.append("strict_pdf_violation_success_fallback")
+                        return context
                     logger.warning(
-                        f"Drive upload unavailable. Saved locally at: {upload_result.payload.get('local_file')}"
+                        f"Drive upload unavailable for business date {business_date}. Saved locally at: {upload_result.payload.get('local_file')}"
                     )
                     context.status = RunStatus.PARTIAL
                 else:
-                    logger.info(f"Successfully uploaded to Drive: {upload_result.payload.get('document_url')}")
+                    logger.info(
+                        f"Successfully uploaded to Drive for business date {business_date}: {upload_result.payload.get('document_url')}"
+                    )
                     context.status = RunStatus.SUCCESS
             else:
-                logger.error(f"Upload failed with no fallback: {upload_result.error}")
+                if self.settings.strict_pdf_only:
+                    logger.error(
+                        "Strict PDF publish failed for business date %s: %s",
+                        business_date,
+                        upload_result.error,
+                    )
+                else:
+                    logger.error(f"Upload failed with no fallback: {upload_result.error}")
                 context.status = RunStatus.FAILED
             
             context.end_time = datetime.utcnow()

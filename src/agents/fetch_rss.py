@@ -1,11 +1,16 @@
 """RSS feed fetcher agent"""
 
 import feedparser
+import logging
 import requests
 from typing import List
 from src.agents.base_agent import BaseAgent
+from src.adapters.resilience import CircuitBreaker, request_with_retry
 from src.models.contracts import AgentMessage, Article, RunContext
 from src.config import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class RSSFetcher(BaseAgent):
@@ -15,6 +20,7 @@ class RSSFetcher(BaseAgent):
         """Initialize RSS fetcher"""
         super().__init__("rss_fetcher")
         self.settings = get_settings()
+        self._feed_breakers: dict[str, CircuitBreaker] = {}
 
     def execute(self, context: RunContext, input_data: dict) -> AgentMessage:
         """Fetch articles from configured RSS feeds
@@ -60,10 +66,19 @@ class RSSFetcher(BaseAgent):
         
         for url in feed_urls:
             try:
-                response = requests.get(
+                breaker = self._feed_breakers.setdefault(
                     url,
-                    timeout=10,
-                    headers={"User-Agent": "daily-digest/1.0"},
+                    CircuitBreaker(name=f"rss:{url}", failure_threshold=3, cooldown_seconds=90),
+                )
+                response = request_with_retry(
+                    fn=lambda u=url: requests.get(
+                        u,
+                        timeout=10,
+                        headers={"User-Agent": "daily-digest/1.0"},
+                    ),
+                    operation=f"rss.fetch:{url}",
+                    max_retries=self.settings.max_retries,
+                    breaker=breaker,
                 )
                 response.raise_for_status()
                 feed = feedparser.parse(response.content)
@@ -106,7 +121,7 @@ class RSSFetcher(BaseAgent):
                     if article.url and article.title:
                         articles.append(article)
             except Exception as feed_error:
-                # Skip individual feed failures, continue with others
-                pass
+                # Skip individual feed failures, continue with others.
+                logger.warning("RSS feed fetch failed for %s: %s", url, feed_error)
         
         return articles

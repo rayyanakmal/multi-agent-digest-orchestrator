@@ -1,0 +1,24 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.7
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest fast suite
+        entry: pytest -q tests/test_llm_adapter.py tests/test_provider_swap.py tests/test_digest_emoji_output.py tests/test_digest_spacing.py tests/test_digest_timezone.py tests/test_resilience.py tests/test_runtime_entrypoint.py
+        language: system
+        pass_filenames: false

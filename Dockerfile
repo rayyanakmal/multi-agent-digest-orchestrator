@@ -3,6 +3,7 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
@@ -13,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     fonts-dejavu-core \
+    fonts-noto-color-emoji \
     libcairo2 \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
@@ -43,7 +45,9 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Install Playwright browser for PDF fallback path.
-RUN python -m playwright install chromium
+RUN mkdir -p /ms-playwright && \
+    python -m playwright install chromium && \
+    chmod -R a+rx /ms-playwright
 
 # Copy application code
 COPY . .
@@ -53,6 +57,7 @@ RUN mkdir -p /app/data /app/credentials
 
 # Create non-root user for security
 RUN useradd -m appuser && chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /ms-playwright
 USER appuser
 
 # Set environment defaults
