@@ -47,8 +47,8 @@ class DriveUploadAgent(BaseAgent):
                     folder_id=self.settings.google_drive_folder_id or "",
                     credentials_json=sa_json
                 )
-            elif os.path.exists(self.settings.google_application_credentials):
-                # Local dev with OAuth: fall back to file-based credentials
+            elif self.settings.google_oauth_token_json or os.path.exists(self.settings.google_application_credentials):
+                # OAuth mode: env-provided token in Cloud Run or local token file in development.
                 self.drive_adapter = GoogleDriveAdapter(
                     credentials_path=self.settings.google_application_credentials,
                     folder_id=self.settings.google_drive_folder_id or ""

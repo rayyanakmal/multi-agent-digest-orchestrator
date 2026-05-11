@@ -59,12 +59,18 @@ class Settings(BaseSettings):
         env="GOOGLE_SERVICE_ACCOUNT_JSON",
         description="Service account JSON for Cloud Run (env-injected from Secret Manager). If present, takes precedence over OAuth credentials."
     )
+    google_oauth_token_json: Optional[str] = Field(
+        default=None,
+        env="GOOGLE_OAUTH_TOKEN_JSON",
+        description="OAuth token JSON for personal-account Drive uploads in Cloud Run."
+    )
 
     # Runtime Configuration
     run_mode: str = Field(default="scheduler", env="RUN_MODE")  # once | scheduler
     output_format: str = Field(default="pdf", env="OUTPUT_FORMAT")  # pdf | html | markdown
     data_dir: str = Field(default="./data", env="DATA_DIR")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    app_version: str = Field(default="unknown", env="APP_VERSION")
     strict_pdf_only: bool = Field(default=True, env="STRICT_PDF_ONLY")
     strict_pdf_allow_local_debug_fallback: bool = Field(
         default=False,

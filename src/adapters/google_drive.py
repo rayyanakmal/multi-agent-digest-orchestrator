@@ -26,18 +26,29 @@ OAUTH_CLIENT_FILE = os.path.join(_BASE, "credentials", "google-oauth-client.json
 OAUTH_TOKEN_FILE = os.path.join(_BASE, "credentials", "google-oauth-token.json")
 
 
-def _load_oauth_credentials() -> OAuthCredentials:
-    """Load saved OAuth user credentials, refreshing if expired."""
-    if not os.path.exists(OAUTH_TOKEN_FILE):
-        raise FileNotFoundError(
-            f"OAuth token not found at {OAUTH_TOKEN_FILE}. "
-            "Run `python setup_google_oauth.py` once to authorise."
-        )
-    creds = OAuthCredentials.from_authorized_user_file(OAUTH_TOKEN_FILE, SCOPES)
+def _load_oauth_credentials(token_json: Optional[str] = None) -> OAuthCredentials:
+    """Load OAuth user credentials from env JSON or local token file."""
+    persist_path = None
+    if token_json:
+        try:
+            token_data = json.loads(token_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid OAuth token JSON: {exc}") from exc
+        creds = OAuthCredentials.from_authorized_user_info(token_data, SCOPES)
+    else:
+        if not os.path.exists(OAUTH_TOKEN_FILE):
+            raise FileNotFoundError(
+                f"OAuth token not found at {OAUTH_TOKEN_FILE}. "
+                "Run `python setup_google_oauth.py` once to authorise."
+            )
+        creds = OAuthCredentials.from_authorized_user_file(OAUTH_TOKEN_FILE, SCOPES)
+        persist_path = OAUTH_TOKEN_FILE
+
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        with open(OAUTH_TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+        if persist_path:
+            with open(persist_path, "w") as f:
+                f.write(creds.to_json())
     return creds
 
 
@@ -99,8 +110,8 @@ class GoogleDriveAdapter:
             except ValueError as e:
                 raise ValueError(f"Failed to load service account credentials: {e}") from e
         else:
-            # Local dev: Use OAuth user credentials from file
-            creds = _load_oauth_credentials()
+            # OAuth mode: Use token from env when provided, otherwise local token file.
+            creds = _load_oauth_credentials(self.settings.google_oauth_token_json)
             self.auth_method = "oauth_user"
         
         self.drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
@@ -146,6 +157,12 @@ class GoogleDriveAdapter:
 
         if existing:
             file_id = existing[0]["id"]
+            logger.info(
+                "Drive upload branch=same_name_update filename=%s folder_id=%s file_id=%s",
+                filename,
+                self.folder_id or "<root>",
+                file_id,
+            )
             self.drive_service.files().update(
                 fileId=file_id,
                 media_body=media,
@@ -157,6 +174,11 @@ class GoogleDriveAdapter:
         if self.folder_id:
             metadata["parents"] = [self.folder_id]
         try:
+            logger.info(
+                "Drive upload branch=create_new filename=%s folder_id=%s",
+                filename,
+                self.folder_id or "<root>",
+            )
             created = self.drive_service.files().create(
                 body=metadata,
                 media_body=media,
@@ -167,19 +189,14 @@ class GoogleDriveAdapter:
             if not self._is_storage_quota_exceeded(exc):
                 raise
 
-            logger.warning(
-                "Drive create failed due to storage quota; attempting fallback update of latest digest file."
+            logger.error(
+                "Drive upload branch=create_quota_failure filename=%s folder_id=%s: refusing rename fallback to protect history.",
+                filename,
+                self.folder_id or "<root>",
             )
-            fallback_file_id = self._find_latest_digest_file_id()
-            if not fallback_file_id:
-                raise
-
-            self.drive_service.files().update(
-                fileId=fallback_file_id,
-                body={"name": filename},
-                media_body=self._build_media_upload(text, mime_type),
-            ).execute()
-            return fallback_file_id
+            raise RuntimeError(
+                "drive_storage_quota_exceeded: create failed and rename fallback disabled"
+            ) from exc
 
     def _build_media_upload(self, content: bytes, mime_type: str) -> MediaIoBaseUpload:
         """Build a fresh media upload body."""
@@ -188,23 +205,6 @@ class GoogleDriveAdapter:
             mimetype=mime_type,
             resumable=False,
         )
-
-    def _find_latest_digest_file_id(self) -> Optional[str]:
-        """Return most recently modified digest file ID in the target folder."""
-        query_parts = ["name contains 'Daily AI and Technology Digest -'", "trashed=false"]
-        if self.folder_id:
-            query_parts.append(f"'{self.folder_id}' in parents")
-
-        result = self.drive_service.files().list(
-            q=" and ".join(query_parts),
-            fields="files(id,modifiedTime)",
-            orderBy="modifiedTime desc",
-            pageSize=1,
-        ).execute()
-        files = result.get("files", [])
-        if not files:
-            return None
-        return files[0].get("id")
 
     def _is_storage_quota_exceeded(self, err: HttpError) -> bool:
         """Check whether a Drive API error indicates storage quota exhaustion."""

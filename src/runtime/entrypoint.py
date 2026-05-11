@@ -49,6 +49,7 @@ def main():
     _configure_logging(settings.log_level)
     
     logger.info(f"Starting Daily Digest App (mode: {settings.run_mode})")
+    logger.info(f"App Version: {settings.app_version}")
     logger.info(f"LLM Provider: {settings.llm_provider}")
     logger.info(f"Topic: {settings.digest_topic}")
     

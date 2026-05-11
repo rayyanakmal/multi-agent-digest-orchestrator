@@ -250,6 +250,15 @@ TIMEZONE="Asia/Hong_Kong" \
 SMOKE_EXECUTE=true \
 ./scripts/deploy_gcp_cloud_run_job.sh
 
+# Optional: deploy with personal-account OAuth Drive auth (no service-account Drive writes)
+# Requires secret: google-oauth-token-json
+PROJECT_ID=YOUR_PROJECT \
+REGION=asia-southeast1 \
+SCHEDULE="0 7 * * *" \
+TIMEZONE="Asia/Hong_Kong" \
+USE_OAUTH_USER_DRIVE=true \
+./scripts/deploy_gcp_cloud_run_job.sh
+
 # Read-only status check (no deployment changes)
 PROJECT_ID=YOUR_PROJECT \
 REGION=asia-southeast1 \
@@ -263,6 +272,19 @@ MAX_EXECUTION_AGE_HOURS=30 \
 REQUIRE_EXPECTED_RUN=true \
 ./scripts/gcp_health_check.sh
 
+# Verify storage-quota incident is resolved (execution logs + current/previous Drive artifacts)
+PROJECT_ID=YOUR_PROJECT \
+REGION=asia-southeast1 \
+TIMEZONE="Asia/Hong_Kong" \
+RUN_MANUAL_EXECUTION=true \
+./scripts/gcp_verify_storage_issue_fix.sh
+
+# Verify version parity across local git, GitHub branch, Cloud Run config, and local Docker cache
+PROJECT_ID=YOUR_PROJECT \
+REGION=asia-southeast1 \
+BRANCH=main \
+./scripts/gcp_verify_release_parity.sh
+
 `gcp_health_check.sh` now also validates that the latest scheduler attempt and latest execution are recent enough to satisfy the most recent expected cron window for simple daily schedules such as `0 7 * * *`. This catches the case where yesterday's run is still fresh enough to pass a 30-hour freshness check even though today's 07:00 run was missed.
 
 # One-command release runner (preflight -> secrets -> deploy -> health)
@@ -273,6 +295,17 @@ SCHEDULE="0 7 * * *" \
 SMOKE_EXECUTE=true \
 ./scripts/gcp_release_run.sh
 
+# Release runner with post-deploy verification gates enabled (default)
+# - Storage-fix verifier: execution logs + artifact continuity checks
+# - Parity verifier: local git vs GitHub vs Cloud job config (+ local Docker image)
+PROJECT_ID=YOUR_PROJECT \
+REGION=asia-southeast1 \
+TIMEZONE="Asia/Hong_Kong" \
+SCHEDULE="0 7 * * *" \
+RUN_VERIFY_STORAGE_FIX=true \
+RUN_VERIFY_PARITY=true \
+./scripts/gcp_release_run.sh
+
 # Dry-run preview (no resource changes)
 PROJECT_ID=YOUR_PROJECT \
 REGION=asia-southeast1 \
@@ -281,8 +314,8 @@ DRY_RUN=true \
 ```
 
 Important Drive auth note:
-- Current Drive adapter refreshes OAuth token by writing to a local token file.
-- For Cloud Run Jobs, prefer migrating to service-account based Drive access, or persist OAuth token state outside container filesystem (for example Secret Manager or Cloud Storage).
+- Cloud Run can use personal-account OAuth by setting `USE_OAUTH_USER_DRIVE=true` during deploy and providing `google-oauth-token-json` in Secret Manager.
+- For long-term production ownership, Shared Drive + service account remains the preferred model when available.
 
 #### Manual (equivalent)
 

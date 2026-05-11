@@ -21,6 +21,8 @@ set -euo pipefail
 #   RUN_DEPLOY=true             # default true
 #   RUN_HEALTH=true             # default true
 #   RUN_VALIDATE_DRIVE=true     # default true
+#   RUN_VERIFY_STORAGE_FIX=true # default true
+#   RUN_VERIFY_PARITY=true      # default true
 #   SMOKE_EXECUTE=true          # passed to deploy script (default false)
 #   MAX_EXECUTION_AGE_HOURS=30  # passed to health check
 
@@ -35,11 +37,20 @@ RUN_SECRETS="${RUN_SECRETS:-true}"
 RUN_DEPLOY="${RUN_DEPLOY:-true}"
 RUN_HEALTH="${RUN_HEALTH:-true}"
 RUN_VALIDATE_DRIVE="${RUN_VALIDATE_DRIVE:-true}"
+RUN_VERIFY_STORAGE_FIX="${RUN_VERIFY_STORAGE_FIX:-true}"
+RUN_VERIFY_PARITY="${RUN_VERIFY_PARITY:-true}"
 
 DRY_RUN="${DRY_RUN:-false}"
 SMOKE_EXECUTE="${SMOKE_EXECUTE:-false}"
 MAX_EXECUTION_AGE_HOURS="${MAX_EXECUTION_AGE_HOURS:-30}"
 DIGEST_DATE="${DIGEST_DATE:-}"
+JOB_NAME="${JOB_NAME:-daily-digest}"
+VERIFY_STORAGE_RUN_MANUAL_EXECUTION="${VERIFY_STORAGE_RUN_MANUAL_EXECUTION:-false}"
+VERIFY_STORAGE_REQUIRE_PREVIOUS_DATE_PRESENT="${VERIFY_STORAGE_REQUIRE_PREVIOUS_DATE_PRESENT:-false}"
+PARITY_BRANCH="${PARITY_BRANCH:-main}"
+PARITY_REQUIRE_CLEAN_WORKTREE="${PARITY_REQUIRE_CLEAN_WORKTREE:-true}"
+PARITY_REQUIRE_LOCAL_DOCKER_IMAGE="${PARITY_REQUIRE_LOCAL_DOCKER_IMAGE:-true}"
+EXPECTED_APP_VERSION="${EXPECTED_APP_VERSION:-}"
 
 if [[ -z "$PROJECT_ID" ]]; then
   echo "[ERROR] PROJECT_ID is required"
@@ -127,12 +138,47 @@ if [[ "$RUN_VALIDATE_DRIVE" == "true" ]]; then
     env
     PROJECT_ID="$PROJECT_ID"
     REGION="$REGION"
+    JOB_NAME="$JOB_NAME"
     DIGEST_DATE="$DIGEST_DATE"
     "$SCRIPT_DIR/gcp_validate_drive_output.sh"
   )
   run_stage "Drive Output Validation" "${VALIDATE_CMD[@]}"
 else
   echo "[INFO] Skipping drive output validation"
+fi
+
+if [[ "$RUN_VERIFY_STORAGE_FIX" == "true" ]]; then
+  VERIFY_STORAGE_CMD=(
+    env
+    PROJECT_ID="$PROJECT_ID"
+    REGION="$REGION"
+    JOB_NAME="$JOB_NAME"
+    TIMEZONE="$TIMEZONE"
+    RUN_MANUAL_EXECUTION="$VERIFY_STORAGE_RUN_MANUAL_EXECUTION"
+    REQUIRE_PREVIOUS_DATE_PRESENT="$VERIFY_STORAGE_REQUIRE_PREVIOUS_DATE_PRESENT"
+    DIGEST_DATE="$DIGEST_DATE"
+    "$SCRIPT_DIR/gcp_verify_storage_issue_fix.sh"
+  )
+  run_stage "Storage Fix Verification" "${VERIFY_STORAGE_CMD[@]}"
+else
+  echo "[INFO] Skipping storage-fix verification"
+fi
+
+if [[ "$RUN_VERIFY_PARITY" == "true" ]]; then
+  PARITY_CMD=(
+    env
+    PROJECT_ID="$PROJECT_ID"
+    REGION="$REGION"
+    JOB_NAME="$JOB_NAME"
+    BRANCH="$PARITY_BRANCH"
+    REQUIRE_CLEAN_WORKTREE="$PARITY_REQUIRE_CLEAN_WORKTREE"
+    REQUIRE_LOCAL_DOCKER_IMAGE="$PARITY_REQUIRE_LOCAL_DOCKER_IMAGE"
+    EXPECTED_APP_VERSION="$EXPECTED_APP_VERSION"
+    "$SCRIPT_DIR/gcp_verify_release_parity.sh"
+  )
+  run_stage "Release Parity Verification" "${PARITY_CMD[@]}"
+else
+  echo "[INFO] Skipping release parity verification"
 fi
 
 echo ""

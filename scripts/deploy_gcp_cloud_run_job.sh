@@ -14,6 +14,8 @@ SCHEDULER_NAME="${SCHEDULER_NAME:-daily-digest}"
 SCHEDULE="${SCHEDULE:-0 7 * * *}"
 TIMEZONE="${TIMEZONE:-UTC}"
 SMOKE_EXECUTE="${SMOKE_EXECUTE:-false}"
+USE_OAUTH_USER_DRIVE="${USE_OAUTH_USER_DRIVE:-false}"
+APP_VERSION="${APP_VERSION:-}"
 
 RUNTIME_SA_NAME="${RUNTIME_SA_NAME:-digest-runner}"
 SCHEDULER_SA_NAME="${SCHEDULER_SA_NAME:-cloud-scheduler-digest}"
@@ -21,6 +23,15 @@ SCHEDULER_SA_NAME="${SCHEDULER_SA_NAME:-cloud-scheduler-digest}"
 if [[ -z "$PROJECT_ID" ]]; then
   echo "[ERROR] PROJECT_ID is required"
   exit 1
+fi
+
+if [[ -z "$APP_VERSION" ]]; then
+  if command -v git >/dev/null 2>&1; then
+    APP_VERSION="$(git rev-parse --short HEAD 2>/dev/null || true)"
+  fi
+fi
+if [[ -z "$APP_VERSION" ]]; then
+  APP_VERSION="unknown"
 fi
 
 if command -v gcloud >/dev/null 2>&1; then
@@ -46,6 +57,15 @@ AR_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${I
 RUNTIME_SA="${RUNTIME_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 SCHEDULER_SA="${SCHEDULER_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 JOB_RUN_URI="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${JOB_NAME}:run"
+
+COMMON_SECRETS="DEEPSEEK_API_KEY=deepseek-key:latest,NEWSAPI_KEY=newsapi-key:latest,GITHUB_TOKEN=github-token:latest"
+if [[ "$USE_OAUTH_USER_DRIVE" == "true" ]]; then
+  DRIVE_AUTH_SECRET="GOOGLE_OAUTH_TOKEN_JSON=google-oauth-token-json:latest"
+  echo "[INFO] Drive auth mode: oauth_user (GOOGLE_OAUTH_TOKEN_JSON)"
+else
+  DRIVE_AUTH_SECRET="GOOGLE_SERVICE_ACCOUNT_JSON=google-service-account-json:latest"
+  echo "[INFO] Drive auth mode: service_account (GOOGLE_SERVICE_ACCOUNT_JSON)"
+fi
 
 retry_gcloud() {
   local attempts="${RETRY_ATTEMPTS:-5}"
@@ -122,8 +142,8 @@ retry_gcloud run jobs deploy "$JOB_NAME" \
   --cpu 1 \
   --max-retries 1 \
   --task-timeout 900s \
-  --set-env-vars "RUN_MODE=once,DIGEST_TZ=${TIMEZONE}" \
-  --set-secrets "DEEPSEEK_API_KEY=deepseek-key:latest,NEWSAPI_KEY=newsapi-key:latest,GITHUB_TOKEN=github-token:latest,GOOGLE_SERVICE_ACCOUNT_JSON=google-service-account-json:latest"
+  --set-env-vars "RUN_MODE=once,DIGEST_TZ=${TIMEZONE},APP_VERSION=${APP_VERSION}" \
+  --set-secrets "${COMMON_SECRETS},${DRIVE_AUTH_SECRET}"
 
 # Allow scheduler SA to invoke job
 retry_gcloud run jobs add-iam-policy-binding "$JOB_NAME" \
